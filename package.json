@@ -1,0 +1,32 @@
+{
+  "name": "lampkeeper",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit && vite build",
+    "build:poki": "tsc --noEmit && vite build --mode poki",
+    "preview": "vite preview",
+    "e2e:smoke": "node tests/e2e/prod-smoke.mjs",
+    "e2e:poki": "node tests/e2e/poki-stub.mjs",
+    "e2e:startup": "node tests/e2e/startup-throttled.mjs --gzip",
+    "e2e:keyboard": "node tests/e2e/input-playthrough.mjs keyboard 1",
+    "e2e:touch": "node tests/e2e/input-playthrough.mjs touch 1",
+    "e2e:multitouch": "node tests/e2e/touch-multitouch.mjs",
+    "e2e:lifecycle": "node tests/e2e/lifecycle.mjs",
+    "e2e:menus": "node tests/e2e/menus-keyboard.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}
