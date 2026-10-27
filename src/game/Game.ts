@@ -230,6 +230,7 @@ export class Game {
     this.levelView?.dispose();
     this.world = new World(setup);
     this.levelView = new LevelView(this.world, this.render.warmLights);
+    this.render.rig.setWorldBounds(this.world.level.w, this.world.level.h);
     this.render.scene.add(this.levelView.root);
     this.guideNav = new NavGrid(this.world.level.w, this.world.level.h);
     this.effects.clear();

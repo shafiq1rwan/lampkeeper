@@ -55,8 +55,10 @@ export function buildProp(prop: Prop, rng: Rng): THREE.BufferGeometry {
       const n = Math.max(1, Math.round(W));
       for (let i = 0; i < n; i++) {
         const cw = (W - 2 * m - 0.36) / n;
-        vb.box(-hw + m + 0.18 + i * cw + 0.03, 0.35, -hd + 0.32, cw - 0.06, 0.08, D * 0.48, PALETTE.sofaCushion);
+        vb.box(-hw + m + 0.18 + i * cw + 0.03, 0.35, -hd + 0.32, cw - 0.06, 0.10, D * 0.48, PALETTE.sofa);
+        vb.box(-hw + m + 0.18 + i * cw + 0.025, 0.42, -hd + 0.10, cw - 0.05, 0.24, 0.19, PALETTE.sofa);
       }
+      vb.box(hw - 0.55, 0.44, -hd + 0.27, 0.26, 0.27, 0.13, PALETTE.sofaCushion);
       break;
     }
     case 'bed': {
@@ -64,6 +66,8 @@ export function buildProp(prop: Prop, rng: Rng): THREE.BufferGeometry {
       vb.box(-hw + 0.06, 0, -hd + 0.02, W - 0.12, 0.62, 0.12, PALETTE.woodDark);
       vb.box(-hw + 0.1, 0.25, -hd + 0.14, W - 0.2, 0.14, D - 0.26, PALETTE.pillow);
       vb.box(-hw + 0.08, 0.3, -hd + D * 0.38, W - 0.16, 0.14, D * 0.58, PALETTE.bedSheet);
+      vb.box(-hw + 0.08, 0.442, -hd + D * 0.43, W - 0.16, 0.015, 0.14, PALETTE.rug);
+      vb.box(-hw + 0.08, 0.442, -hd + D * 0.79, W - 0.16, 0.015, 0.19, PALETTE.sofa);
       const pillows = W >= 1.6 ? 2 : 1;
       for (let i = 0; i < pillows; i++) {
         const pw = (W - 0.4) / pillows;
@@ -72,7 +76,10 @@ export function buildProp(prop: Prop, rng: Rng): THREE.BufferGeometry {
       break;
     }
     case 'bookshelf': {
-      vb.box(-hw + 0.05, 0, -hd + 0.05, W - 0.1, 1.35, 0.42, PALETTE.wood);
+      vb.box(-hw + 0.05, 0, -hd + 0.05, W - 0.1, 1.35, 0.08, PALETTE.woodDark);
+      vb.box(-hw + 0.04, 0, -hd + 0.05, 0.09, 1.4, 0.44, PALETTE.wood);
+      vb.box(hw - 0.13, 0, -hd + 0.05, 0.09, 1.4, 0.44, PALETTE.wood);
+      for (let s = 0; s <= 3; s++) vb.box(-hw + 0.04, 0.04 + s * 0.44, -hd + 0.05, W - 0.08, 0.06, 0.44, PALETTE.wood);
       const shelves = 3;
       const colors = [PALETTE.book1, PALETTE.book2, PALETTE.book3, PALETTE.sofa];
       for (let s = 0; s < shelves; s++) {
@@ -107,6 +114,7 @@ export function buildProp(prop: Prop, rng: Rng): THREE.BufferGeometry {
       const drawers = 2;
       for (let i = 0; i < drawers; i++) {
         vb.box(-hw + 0.16, 0.12 + i * 0.32, -hd + 0.56, W - 0.32, 0.24, 0.02, PALETTE.wood);
+        vb.box(-0.09, 0.22 + i * 0.32, -hd + 0.58, 0.18, 0.03, 0.04, PALETTE.book3);
       }
       break;
     }
@@ -134,9 +142,10 @@ export function buildProp(prop: Prop, rng: Rng): THREE.BufferGeometry {
 /** Unit wall block: base trim, painted body and a dark cap. Scaled per instance. */
 export function wallUnitGeometry(): THREE.BufferGeometry {
   return new VoxelBuilder()
-    .box(0, 0, 0, 1, 0.1, 1, PALETTE.wallBase)
-    .box(0, 0.1, 0, 1, 0.84, 1, PALETTE.wall)
-    .box(0, 0.94, 0, 1, 0.06, 1, PALETTE.wallCap)
+    .box(0, 0, 0, 1, 0.045, 1, PALETTE.wallBase)
+    .box(0.012, 0.045, 0.012, 0.976, 0.925, 0.976, PALETTE.wall)
+    .box(0, 0.045, 0, 1, 0.018, 1, 0x998971)
+    .box(0, 0.97, 0, 1, 0.03, 1, PALETTE.wallCap)
     .build();
 }
 
@@ -196,6 +205,10 @@ export function doorLeafGeometry(width: number, open: boolean): THREE.BufferGeom
     vb.box(width - 0.58, 0, -0.56, 0.08, h + 0.08, 0.12, PALETTE.doorFrame);
   } else {
     vb.box(-0.46, 0, -0.52, width - 0.08, h, 0.06, PALETTE.doorWood);
+    for (const y of [0.20, h * 0.52]) {
+      vb.box(-0.36, y, -0.453, width - 0.28, h * 0.31, 0.015, 0x95613b);
+      vb.box(-0.32, y + 0.04, -0.432, width - 0.36, h * 0.31 - 0.08, 0.008, PALETTE.doorWood);
+    }
     vb.box(-0.5, 0, -0.53, 0.06, h + 0.06, 0.08, PALETTE.doorFrame);
     vb.box(width - 0.56, 0, -0.53, 0.06, h + 0.06, 0.08, PALETTE.doorFrame);
     vb.box(-0.5, h, -0.53, width, 0.06, 0.08, PALETTE.doorFrame);
@@ -253,6 +266,7 @@ export interface PlayerRig extends CharacterRig {
 export function buildPlayer(): PlayerRig {
   const mat = materials().vertex;
   const root = new THREE.Group();
+  root.scale.setScalar(1.12);
   const body = new THREE.Group();
   root.add(body);
   const leg = (): THREE.BufferGeometry =>
@@ -263,6 +277,9 @@ export function buildPlayer(): PlayerRig {
     .box(-0.19, 0.38, -0.12, 0.38, 0.36, 0.24, PALETTE.playerJacket)
     .box(-0.19, 0.38, -0.12, 0.38, 0.06, 0.24, PALETTE.playerJacketDark)
     .box(-0.04, 0.46, 0.115, 0.08, 0.24, 0.02, PALETTE.playerJacketDark)
+    .box(-0.15, 0.51, 0.123, 0.095, 0.09, 0.022, PALETTE.playerJacketDark)
+    .box(0.06, 0.51, 0.123, 0.095, 0.09, 0.022, PALETTE.playerJacketDark)
+    .box(-0.015, 0.40, 0.133, 0.03, 0.30, 0.012, 0xe7b54a)
     .build();
   body.add(part(torso, mat, 0, 0, 0));
   const head = new THREE.Group();
@@ -271,6 +288,9 @@ export function buildPlayer(): PlayerRig {
     part(
       new VoxelBuilder()
         .box(-0.15, 0, -0.14, 0.3, 0.27, 0.28, PALETTE.playerSkin)
+        .box(-0.155, 0.12, -0.15, 0.31, 0.13, 0.06, 0x533e27)
+        .box(-0.155, 0.14, -0.15, 0.045, 0.10, 0.27, 0x533e27)
+        .box(0.11, 0.14, -0.15, 0.045, 0.10, 0.27, 0x533e27)
         .box(-0.17, 0.22, -0.16, 0.34, 0.1, 0.32, PALETTE.playerCap)
         .box(-0.15, 0.22, 0.12, 0.3, 0.05, 0.14, PALETTE.playerCap)
         .box(-0.09, 0.1, 0.14, 0.05, 0.05, 0.01, 0x2a1d14)

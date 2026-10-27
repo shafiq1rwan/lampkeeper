@@ -23,7 +23,8 @@ import {
   type CharacterRig,
 } from './models';
 import { ANIMATION, CAMERA, GEOMETRY, LIGHTING, PALETTE } from './theme';
-import { circuitTagTexture, iconTexture, plaqueTexture } from './textures';
+import { blobTexture, circuitTagTexture, iconTexture, plaqueTexture } from './textures';
+import { SurfaceLighting } from './SurfaceLighting';
 import { VoxelBuilder } from './voxel';
 
 const tmpM = new THREE.Matrix4();
@@ -39,6 +40,8 @@ interface WallInstance {
   z: number;
   height: number;
   target: number;
+  width: number;
+  depth: number;
   attachments: THREE.Object3D[];
 }
 
@@ -68,6 +71,7 @@ export class LevelView {
   private emergencyWarm: { idx: number; w: number }[] = [];
   private readonly warm: Float32Array;
   private bulbMesh!: THREE.InstancedMesh;
+  private readonly bulbTransforms: THREE.Matrix4[] = [];
   private readonly fixtures: FixtureView[] = [];
   private emergencyBulbs = 0;
   private readonly levers: { mesh: THREE.Mesh; mat: THREE.MeshLambertMaterial; circuit: number; angle: number }[] = [];
@@ -86,6 +90,8 @@ export class LevelView {
   private lastPreview = -2;
   private time = 0;
   private readonly lightCandidates: { x: number; z: number; d: number }[] = [];
+  private readonly surfaceLighting: SurfaceLighting;
+  private readonly emergencyLights: { x: number; z: number }[] = [];
 
   constructor(
     private readonly world: World,
@@ -93,6 +99,7 @@ export class LevelView {
   ) {
     const level = world.level;
     this.level = level;
+    this.surfaceLighting = new SurfaceLighting(level);
     const cosmetic = new Rng(deriveSeed(world.setup.seed, `cosmetic:${level.template.id}`));
     this.warm = new Float32Array(0);
     this.buildFloor(cosmetic);
@@ -103,6 +110,8 @@ export class LevelView {
     this.buildFixtures();
     this.buildSwitches();
     this.buildDecor(cosmetic);
+    this.buildArchitecture(cosmetic);
+    this.buildContactShadows();
     this.buildTenant(cosmetic);
     this.buildExit();
 
@@ -128,13 +137,30 @@ export class LevelView {
       for (let x = 0; x < level.w; x++) {
         const i = z * level.w + x;
         const k = level.kind[i];
-        if (k === K.Wall) continue;
-        const alt = (x + z) % 2 === 0;
-        let color: number = alt ? PALETTE.floorCorridor : PALETTE.floorCorridorAlt;
-        if (k === K.Room || k === K.Furniture) color = z % 2 === 0 ? PALETTE.floorRoom : PALETTE.floorRoomAlt;
-        if (level.zone[i] === ZONE.Nook) color = PALETTE.floorNook;
-        if (level.zone[i] === ZONE.Landing) color = PALETTE.floorLanding;
-        vb.quad(x, 0, z, 1, 1, color);
+        if (k === K.Wall) {
+          // Fill the recess around the thinner rendered partition. The simulation still
+          // owns the original wall cell; this introduces no traversable space.
+          const nearFloor = [i - 1, i + 1, i - level.w, i + level.w].some((c) => c >= 0 && c < level.kind.length && level.kind[c] !== K.Wall);
+          if (nearFloor) vb.quad(x, -0.002, z, 1, 1, PALETTE.floorCorridorAlt);
+          continue;
+        }
+        const room = k === K.Room || k === K.Furniture;
+        vb.quad(x, -0.006, z, 1, 1, room ? 0x73563b : 0x8a7154);
+        // Real small-scale geometry, not one flat colour per gameplay cell. The corridor
+        // uses inset stone tiles; apartments use staggered wooden boards.
+        const columns = room ? 2 : 4;
+        for (let tz = 0; tz < 4; tz++) for (let tx = 0; tx < columns; tx++) {
+          const base = room
+            ? (rng.next() < 0.5 ? PALETTE.floorRoom : PALETTE.floorRoomAlt)
+            : (rng.next() < 0.5 ? PALETTE.floorCorridor : PALETTE.floorCorridorAlt);
+          let color = base;
+          if (level.zone[i] === ZONE.Nook) color = PALETTE.floorNook;
+          if (level.zone[i] === ZONE.Landing) color = PALETTE.floorLanding;
+          tmpC.setHex(color).multiplyScalar(0.89 + rng.next() * 0.20);
+          const gap = room ? 0.004 : 0.005;
+          vb.quad(x + tx / columns + gap, 0, z + tz / 4 + gap, 1 / columns - gap * 2, 0.25 - gap * 2, tmpC.getHex());
+          if (room && rng.next() < 0.3) vb.quad(x + tx / columns + 0.05, 0.001, z + tz / 4 + 0.1, 0.25, 0.008, PALETTE.floorRoomAlt);
+        }
       }
     }
     // Rugs in larger rooms (cosmetic only).
@@ -163,6 +189,7 @@ export class LevelView {
       vb.quad(cx - rw / 2 + 0.15, 0.006, cz - rd / 2 + 0.15, rw - 0.3, rd - 0.3, 0x5f828b);
     }
     const mesh = new THREE.Mesh(vb.build(), materials().vertex);
+    this.surfaceLighting.register(mesh.geometry);
     mesh.receiveShadow = true;
     this.root.add(mesh);
   }
@@ -184,7 +211,12 @@ export class LevelView {
           }
         if (!near) continue;
         this.wallIndex.set(i, this.walls.length);
-        this.walls.push({ cell: i, x, z, height: GEOMETRY.wallHeight, target: GEOMETRY.wallHeight, attachments: [] });
+        const open = (c: number): boolean => c >= 0 && c < level.kind.length && !solidVisible(level.kind[c]);
+        const horizontal = open(i - level.w) || open(i + level.w);
+        const vertical = (x > 0 && open(i - 1)) || (x < level.w - 1 && open(i + 1));
+        const width = vertical && !horizontal ? 0.24 : 1;
+        const depth = horizontal && !vertical ? 0.24 : 1;
+        this.walls.push({ cell: i, x, z, width, depth, height: GEOMETRY.wallHeight, target: GEOMETRY.wallHeight, attachments: [] });
       }
     }
     const mesh = new THREE.InstancedMesh(wallUnitGeometry(), materials().wall, this.walls.length);
@@ -207,9 +239,9 @@ export class LevelView {
     // Door cells only draw the lintel band above the door, so the door leaf stays visible.
     if (isDoor) {
       const y0 = Math.min(w.height, GEOMETRY.doorHeight + 0.08);
-      tmpM.compose(tmpV.set(w.x, y0, w.z), tmpQ.identity(), tmpS.set(1, Math.max(0.001, w.height - y0), 1));
+      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, y0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, Math.max(0.001, w.height - y0), w.depth));
     } else {
-      tmpM.compose(tmpV.set(w.x, 0, w.z), tmpQ.identity(), tmpS.set(1, w.height, 1));
+      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, 0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, w.height, w.depth));
     }
     mesh.setMatrixAt(idx, tmpM);
   }
@@ -217,7 +249,26 @@ export class LevelView {
   private attach(wallCell: number, obj: THREE.Object3D): void {
     this.root.add(obj);
     const idx = this.wallIndex.get(wallCell);
-    if (idx !== undefined) this.walls[idx].attachments.push(obj);
+    if (idx !== undefined) {
+      const wall = this.walls[idx];
+      const dx = Math.sign(wall.x + 0.5 - obj.position.x) * (1 - wall.width) / 2;
+      const dz = Math.sign(wall.z + 0.5 - obj.position.z) * (1 - wall.depth) / 2;
+      obj.position.x += dx;
+      obj.position.z += dz;
+      if (typeof obj.userData.bulbIndex === 'number') {
+        this.bulbMesh.getMatrixAt(obj.userData.bulbIndex, tmpM);
+        tmpM.elements[12] += dx;
+        tmpM.elements[14] += dz;
+        this.bulbMesh.setMatrixAt(obj.userData.bulbIndex, tmpM);
+        this.bulbMesh.instanceMatrix.needsUpdate = true;
+      }
+      wall.attachments.push(obj);
+    }
+    obj.updateMatrixWorld(true);
+    obj.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh && mesh.material === materials().vertex) this.surfaceLighting.register(mesh.geometry, mesh.matrixWorld);
+    });
   }
 
   private buildProps(rng: Rng): void {
@@ -227,6 +278,7 @@ export class LevelView {
     for (const g of geoms) g.dispose();
     if (!merged) return;
     const mesh = new THREE.Mesh(merged, materials().vertex);
+    this.surfaceLighting.register(merged);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     this.root.add(mesh);
@@ -244,12 +296,12 @@ export class LevelView {
         if (door.open) {
           // Frame posts at the doorway edges plus a threshold strip.
           if (door.alongX) {
-            staticVb.box(x, 0, z, 0.08, GEOMETRY.doorHeight + 0.1, 1, PALETTE.doorFrame);
-            staticVb.box(x + 0.92, 0, z, 0.08, GEOMETRY.doorHeight + 0.1, 1, PALETTE.doorFrame);
+            staticVb.box(x, 0, z + 0.38, 0.08, GEOMETRY.doorHeight + 0.1, 0.24, PALETTE.doorFrame);
+            staticVb.box(x + 0.92, 0, z + 0.38, 0.08, GEOMETRY.doorHeight + 0.1, 0.24, PALETTE.doorFrame);
             staticVb.box(x + 0.08, 0, z + 0.1, 0.84, 0.02, 0.8, PALETTE.woodDark);
           } else {
-            staticVb.box(x, 0, z, 1, GEOMETRY.doorHeight + 0.1, 0.08, PALETTE.doorFrame);
-            staticVb.box(x, 0, z + 0.92, 1, GEOMETRY.doorHeight + 0.1, 0.08, PALETTE.doorFrame);
+            staticVb.box(x + 0.38, 0, z, 0.24, GEOMETRY.doorHeight + 0.1, 0.08, PALETTE.doorFrame);
+            staticVb.box(x + 0.38, 0, z + 0.92, 0.24, GEOMETRY.doorHeight + 0.1, 0.08, PALETTE.doorFrame);
             staticVb.box(x + 0.1, 0, z + 0.08, 0.8, 0.02, 0.84, PALETTE.woodDark);
           }
         } else {
@@ -288,7 +340,11 @@ export class LevelView {
         }
       }
     }
-    if (!staticVb.empty) this.root.add(new THREE.Mesh(staticVb.build(), materials().vertex));
+    if (!staticVb.empty) {
+      const geometry = staticVb.build();
+      this.surfaceLighting.register(geometry);
+      this.root.add(new THREE.Mesh(geometry, materials().vertex));
+    }
   }
 
   private corridorSide(cell: number): { dx: number; dz: number } | null {
@@ -311,6 +367,7 @@ export class LevelView {
   private buildFixtures(): void {
     const { level } = this;
     const nookEmergency = this.emergencyMounts();
+    for (const m of nookEmergency) this.emergencyLights.push({ x: m.cx + 0.5 + m.dx * 0.60, z: m.cz + 0.5 + m.dz * 0.60 });
     this.emergencyBulbs = nookEmergency.length;
     const count = level.fixtures.length + this.emergencyBulbs;
     this.bulbMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(BULB.w, BULB.h, BULB.d), materials().bulb, count);
@@ -319,12 +376,13 @@ export class LevelView {
     const place = (cx: number, cz: number, dx: number, dz: number, bulbIdx: number, circuit: number): THREE.Group => {
       const free = dx === 0 && dz === 0;
       const g = free ? mountGroup(cx, cz, 0, -1) : mountGroup(cx, cz, dx, dz);
-      g.add(new THREE.Mesh(free ? post : sconce, materials().vertex));
+      g.add(new THREE.Mesh((free ? post : sconce).clone(), materials().vertex));
       g.updateMatrixWorld(true);
       const local = free ? tmpV.set(0, GEOMETRY.fixtureHeight + BULB.h / 2 - 0.05, 0) : tmpV.set(BULB.x + BULB.w / 2, BULB.y + BULB.h / 2, BULB.z + BULB.d / 2);
       local.applyMatrix4(g.matrixWorld);
       tmpM.compose(local, tmpQ.setFromAxisAngle(UP, g.rotation.y), tmpS.set(1, 1, 1));
       this.bulbMesh.setMatrixAt(bulbIdx, tmpM);
+      g.userData.bulbIndex = bulbIdx;
       if (circuit >= 0) {
         const mat = new THREE.MeshBasicMaterial({ map: circuitTagTexture(circuit), transparent: true });
         this.ownedMaterials.push(mat);
@@ -357,7 +415,14 @@ export class LevelView {
       this.bulbMesh.setColorAt(level.fixtures.length + i, tmpC.setRGB(...PALETTE.bulbNook));
     });
     for (const f of level.fixtures) this.bulbMesh.setColorAt(f.id, tmpC.setRGB(...PALETTE.bulbOff));
+    for (let i = 0; i < count; i++) {
+      const matrix = new THREE.Matrix4();
+      this.bulbMesh.getMatrixAt(i, matrix);
+      this.bulbTransforms.push(matrix);
+    }
     this.root.add(this.bulbMesh);
+    sconce.dispose();
+    post.dispose();
   }
 
   /** Emergency lamps: one in the nook and one on the exit landing (always on). */
@@ -385,7 +450,7 @@ export class LevelView {
     const housing = switchHousingGeometry();
     for (const s of level.switches) {
       const g = mountGroup(s.cx, s.cz, s.mount.dx, s.mount.dz);
-      g.add(new THREE.Mesh(housing, materials().vertex));
+      g.add(new THREE.Mesh(housing.clone(), materials().vertex));
       const mat = new THREE.MeshLambertMaterial({ color: PALETTE.leverOff, emissive: 0x000000 });
       this.ownedMaterials.push(mat);
       const lever = new THREE.Mesh(leverGeometry(), mat);
@@ -399,6 +464,7 @@ export class LevelView {
       this.attach((s.cz + s.mount.dz) * level.w + (s.cx + s.mount.dx), g);
       this.levers.push({ mesh: lever, mat, circuit: s.circuit, angle: 0.6 });
     }
+    housing.dispose();
   }
 
   private buildDecor(rng: Rng): void {
@@ -417,9 +483,79 @@ export class LevelView {
     for (let k = 0; k < count; k++) {
       const c = candidates[k];
       const g = mountGroup(c % w, Math.floor(c / w), 0, -1);
-      g.add(new THREE.Mesh(decorGeometry(rng.next() < 0.75 ? 0 : 1, rng), materials().vertex));
+      const decor = new THREE.Mesh(decorGeometry(rng.next() < 0.75 ? 0 : 1, rng), materials().vertex);
+      decor.scale.setScalar(1.25);
+      g.add(decor);
       this.attach(c - w, g);
+      g.updateMatrixWorld(true);
     }
+  }
+
+  /** Architectural dressing lives on existing walls/floors, keeping all routes unchanged. */
+  private buildArchitecture(rng: Rng): void {
+    const { level } = this;
+    const foundation = new VoxelBuilder();
+    const details = new VoxelBuilder();
+    for (let z = 0; z < level.h; z++) for (let x = 0; x < level.w; x++) {
+      const c = z * level.w + x;
+      if (level.kind[c] !== K.Wall || this.wallIndex.has(c)) {
+        foundation.box(x, -0.34, z, 1, 0.32, 1, PALETTE.void);
+        foundation.box(x, -0.08, z, 1, 0.06, 1, 0x39434a);
+      }
+      // Recessed windows and a sill on apartment back walls. Windows are decoration,
+      // never a new light-safety source or a gap in the collision wall.
+      if (level.kind[c] !== K.Room || level.kind[c - level.w] !== K.Wall) continue;
+      if (x % 3 !== 1 || rng.next() < 0.3 || level.fixtures.some((f) => f.cell === c)) continue;
+      const g = mountGroup(x, z, 0, -1);
+      const vb = new VoxelBuilder()
+        .box(-0.40, 0.82, -0.495, 0.80, 0.94, 0.06, PALETTE.woodDark)
+        .box(-0.34, 0.89, -0.425, 0.68, 0.80, 0.015, 0x416575)
+        .box(-0.02, 0.89, -0.402, 0.04, 0.80, 0.025, PALETTE.woodDark)
+        .box(-0.34, 1.25, -0.402, 0.68, 0.04, 0.025, PALETTE.woodDark)
+        .box(-0.44, 0.78, -0.48, 0.88, 0.07, 0.20, PALETTE.wood);
+      const mesh = new THREE.Mesh(vb.build(), materials().vertex);
+      g.add(mesh);
+      this.attach(c - level.w, g);
+      g.updateMatrixWorld(true);
+    }
+    for (const door of level.doors) for (const cell of door.cells) {
+      const side = this.corridorSide(cell);
+      if (!side) continue;
+      const x = cell % level.w, z = Math.floor(cell / level.w);
+      const mx = x + 0.5 + side.dx * 0.85, mz = z + 0.5 + side.dz * 0.85;
+      const mw = side.dz ? 0.78 : 0.50, md = side.dz ? 0.50 : 0.78;
+      details.quad(mx - mw / 2, 0.008, mz - md / 2, mw, md, 0x61462b);
+      details.quad(mx - mw / 2 + 0.04, 0.010, mz - md / 2 + 0.04, mw - 0.08, md - 0.08, 0xa17c43);
+      for (let j = 1; j < 5; j++) details.quad(mx - mw / 2 + 0.07, 0.012, mz - md / 2 + md * j / 6, mw - 0.14, 0.015, 0x73542e);
+      // An open door leaf rests against the jamb, within the doorway's existing side post.
+      if (door.open) {
+        if (door.alongX) details.box(x + 0.04, 0, z + 0.08, 0.055, GEOMETRY.doorHeight, 0.80, PALETTE.doorWood);
+        else details.box(x + 0.08, 0, z + 0.04, 0.80, GEOMETRY.doorHeight, 0.055, PALETTE.doorWood);
+      }
+    }
+    const base = new THREE.Mesh(foundation.build(), materials().vertex);
+    base.receiveShadow = true;
+    this.root.add(base);
+    if (!details.empty) {
+      const mesh = new THREE.Mesh(details.build(), materials().vertex);
+      this.surfaceLighting.register(mesh.geometry);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.root.add(mesh);
+    }
+  }
+
+  private buildContactShadows(): void {
+    const mat = new THREE.MeshBasicMaterial({ map: blobTexture(), color: 0x080b10, transparent: true, opacity: 0.45, depthWrite: false });
+    this.ownedMaterials.push(mat);
+    const shadows = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, this.level.props.length);
+    tmpQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+    this.level.props.forEach((p, i) => {
+      tmpM.compose(tmpV.set((p.x0 + p.x1 + 1) / 2, 0.023, (p.z0 + p.z1 + 1) / 2), tmpQ, tmpS.set(p.x1 - p.x0 + 1.45, p.z1 - p.z0 + 1.45, 1));
+      shadows.setMatrixAt(i, tmpM);
+    });
+    shadows.renderOrder = 3;
+    this.root.add(shadows);
   }
 
   private buildTenant(rng: Rng): void {
@@ -540,7 +676,7 @@ export class LevelView {
           vec4 r = cellAt(cell + vec2(1.0, 0.0));
           vec4 u = cellAt(cell + vec2(0.0, -1.0));
           vec4 d = cellAt(cell + vec2(0.0, 1.0));
-          float ew = 0.075;
+          float ew = 0.035;
           float edge = 0.0;
           if (prot > 0.5) {
             if (l.b > 0.5 && l.r < 0.5 && f.x < ew) edge = 1.0;
@@ -564,16 +700,16 @@ export class LevelView {
               // Slow, low-contrast pulse (about 1.5 Hz) – never rapid flashing.
               pulse = uReduced > 0.5 ? 0.55 : 0.5 + 0.35 * cos(uTime * 9.42);
             }
-            col = uSafe * (0.9 + glow * 0.45);
-            a = (0.24 + glow * 0.26) * pulse;
+            col = uSafe * (0.85 + glow * 0.30);
+            a = (0.025 + glow * 0.045) * pulse;
             if (edge > 0.5) {
               bool dash = fading > 0.5 && fract((vWorld.x + vWorld.y) * 2.0) < 0.5;
               col = uEdge;
-              a = dash ? 0.15 : 0.9 * max(pulse, 0.6);
+              a = dash ? 0.10 : 0.62 * max(pulse, 0.6);
             }
           } else {
             col = uDark;
-            a = 0.34;
+            a = 0.025;
           }
           if (pedge > 0.5 && fract((vWorld.x + vWorld.y) * 2.5) < 0.6) {
             col = uPreview;
@@ -668,6 +804,7 @@ export class LevelView {
     for (let i = 0; i < n; i++) if (level.emergency[i] && gd[i * 4] < 150) gd[i * 4] = 150;
     this.maskTex.needsUpdate = true;
     this.glowTex.needsUpdate = true;
+    this.surfaceLighting.refresh(gd);
   }
 
   private refreshWarmth(): void {
@@ -740,7 +877,14 @@ export class LevelView {
         if (Math.abs(w.height - w.target) <= 0.002) w.height = w.target;
         this.setWallMatrix(this.wallMesh, i, w);
         const show = w.height > 0.95;
-        for (const a of w.attachments) a.visible = show;
+        for (const a of w.attachments) {
+          a.visible = show;
+          const bulbIndex = a.userData.bulbIndex;
+          if (typeof bulbIndex === 'number') {
+            this.bulbMesh.setMatrixAt(bulbIndex, show ? this.bulbTransforms[bulbIndex] : tmpM.makeScale(0, 0, 0));
+            this.bulbMesh.instanceMatrix.needsUpdate = true;
+          }
+        }
         dirty = true;
       }
     }
@@ -798,10 +942,11 @@ export class LevelView {
     const { level, world } = this;
     const cands = this.lightCandidates;
     cands.length = 0;
+    for (const e of this.emergencyLights) cands.push({ x: e.x, z: e.z, d: (e.x - viewX) ** 2 + (e.z - viewZ) ** 2 });
     for (const f of level.fixtures) {
       if (world.broken[f.id] || !world.circuits.on[f.circuit]) continue;
-      const x = f.cx + 0.5 + f.mount.dx * 0.25;
-      const z = f.cz + 0.5 + f.mount.dz * 0.25;
+      const x = f.cx + 0.5 + f.mount.dx * 0.60;
+      const z = f.cz + 0.5 + f.mount.dz * 0.60;
       cands.push({ x, z, d: (x - viewX) ** 2 + (z - viewZ) ** 2 });
     }
     cands.sort((a, b) => a.d - b.d);

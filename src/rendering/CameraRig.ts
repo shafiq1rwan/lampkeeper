@@ -8,6 +8,7 @@ export class CameraRig {
   private tx = 0;
   private tz = 0;
   private aspect = 16 / 9;
+  private bounds: { w: number; h: number } | null = null;
   /** Extra zoom-out factor (e.g. for the ending). */
   zoom = 1;
   private currentZoom = 1;
@@ -28,6 +29,10 @@ export class CameraRig {
   resize(width: number, height: number): void {
     this.aspect = Math.max(0.2, width / Math.max(1, height));
     this.applyFrustum();
+  }
+
+  setWorldBounds(w: number, h: number): void {
+    this.bounds = { w, h };
   }
 
   private applyFrustum(): void {
@@ -73,7 +78,14 @@ export class CameraRig {
   private place(): void {
     const d = CAMERA.distance;
     const cp = Math.cos(CAMERA.pitch);
-    this.camera.position.set(this.tx + Math.sin(CAMERA.yaw) * d * cp, d * Math.sin(CAMERA.pitch), this.tz + Math.cos(CAMERA.yaw) * d * cp);
-    this.camera.lookAt(this.tx, 0, this.tz);
+    // Softly bias boundary framing inward instead of spending half the opening view on
+    // empty space. The shift is capped to keep the player visible on portrait displays.
+    const b = this.bounds;
+    const limit = this.aspect < 1 ? 0.85 : 2.4;
+    const bias = (v: number, size: number): number => Math.max(-limit, Math.min(limit, Math.max(5, Math.min(size - 5, v)) - v));
+    const x = this.tx + (b ? bias(this.tx, b.w) : 0);
+    const z = this.tz + (b ? bias(this.tz, b.h) : 0);
+    this.camera.position.set(x + Math.sin(CAMERA.yaw) * d * cp, d * Math.sin(CAMERA.pitch), z + Math.cos(CAMERA.yaw) * d * cp);
+    this.camera.lookAt(x, 0, z);
   }
 }
