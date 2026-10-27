@@ -38,8 +38,11 @@ interface WallInstance {
   cell: number;
   x: number;
   z: number;
-  height: number;
-  target: number;
+  /** 0 = solid, 1 = fully faded to `wallFadeOpacity`. Height never changes. */
+  fade: number;
+  /** Wall is currently in the fade zone (with hysteresis). */
+  faded: boolean;
+  attachmentsShown: boolean;
   width: number;
   depth: number;
   attachments: THREE.Object3D[];
@@ -67,6 +70,9 @@ export class LevelView {
   private readonly walls: WallInstance[] = [];
   private readonly wallIndex = new Map<number, number>();
   private wallMesh!: THREE.InstancedMesh;
+  /** Same walls drawn transparently; a wall lives in exactly one of the two meshes at a time. */
+  private wallGhost!: THREE.InstancedMesh;
+  private wallOpacity!: THREE.InstancedBufferAttribute;
   private wallWarmWeights: { idx: number; w: number }[][] = [];
   private emergencyWarm: { idx: number; w: number }[] = [];
   private readonly warm: Float32Array;
@@ -216,32 +222,46 @@ export class LevelView {
         const vertical = (x > 0 && open(i - 1)) || (x < level.w - 1 && open(i + 1));
         const width = vertical && !horizontal ? 0.24 : 1;
         const depth = horizontal && !vertical ? 0.24 : 1;
-        this.walls.push({ cell: i, x, z, width, depth, height: GEOMETRY.wallHeight, target: GEOMETRY.wallHeight, attachments: [] });
+        this.walls.push({ cell: i, x, z, width, depth, fade: 0, faded: false, attachmentsShown: true, attachments: [] });
       }
     }
-    const mesh = new THREE.InstancedMesh(wallUnitGeometry(), materials().wall, this.walls.length);
+    const n = this.walls.length;
+    const mesh = new THREE.InstancedMesh(wallUnitGeometry(), materials().wall, n);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    const ghostGeometry = wallUnitGeometry();
+    this.wallOpacity = new THREE.InstancedBufferAttribute(new Float32Array(n).fill(1), 1);
+    this.wallOpacity.setUsage(THREE.DynamicDrawUsage);
+    ghostGeometry.setAttribute('instanceOpacity', this.wallOpacity);
+    const ghost = new THREE.InstancedMesh(ghostGeometry, materials().wallGhost, n);
+    ghost.receiveShadow = true;
+    ghost.renderOrder = 6;
     this.walls.forEach((w, idx) => {
-      // Door and exit cells are lower so their doors read clearly.
-      const isDoor = level.kind[w.cell] !== K.Wall;
-      w.height = w.target = isDoor ? GEOMETRY.wallHeight : GEOMETRY.wallHeight;
-      this.setWallMatrix(mesh, idx, w);
+      this.setWallMatrix(mesh, idx, w, false);
+      this.setWallMatrix(ghost, idx, w, true);
       mesh.setColorAt(idx, tmpC.setRGB(...LIGHTING.wallCool));
+      ghost.setColorAt(idx, tmpC);
     });
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    ghost.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.wallMesh = mesh;
-    this.root.add(mesh);
+    this.wallGhost = ghost;
+    this.root.add(mesh, ghost);
   }
 
-  private setWallMatrix(mesh: THREE.InstancedMesh, idx: number, w: WallInstance): void {
-    const isDoor = this.level.kind[w.cell] !== K.Wall;
+  /** Place a wall instance at full height, or collapse it to nothing when `hidden`. */
+  private setWallMatrix(mesh: THREE.InstancedMesh, idx: number, w: WallInstance, hidden: boolean): void {
+    if (hidden) {
+      mesh.setMatrixAt(idx, tmpM.makeScale(0, 0, 0));
+      return;
+    }
+    const h = GEOMETRY.wallHeight;
     // Door cells only draw the lintel band above the door, so the door leaf stays visible.
-    if (isDoor) {
-      const y0 = Math.min(w.height, GEOMETRY.doorHeight + 0.08);
-      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, y0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, Math.max(0.001, w.height - y0), w.depth));
+    if (this.level.kind[w.cell] !== K.Wall) {
+      const y0 = Math.min(h, GEOMETRY.doorHeight + 0.08);
+      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, y0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, Math.max(0.001, h - y0), w.depth));
     } else {
-      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, 0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, w.height, w.depth));
+      tmpM.compose(tmpV.set(w.x + (1 - w.width) / 2, 0, w.z + (1 - w.depth) / 2), tmpQ.identity(), tmpS.set(w.width, h, w.depth));
     }
     mesh.setMatrixAt(idx, tmpM);
   }
@@ -821,8 +841,10 @@ export class LevelView {
     for (let i = 0; i < this.walls.length; i++) {
       const t = warm[i];
       this.wallMesh.setColorAt(i, tmpC.setRGB(cr + (wr - cr) * t, cg + (wg - cg) * t, cb + (wb - cb) * t));
+      this.wallGhost.setColorAt(i, tmpC);
     }
     if (this.wallMesh.instanceColor) this.wallMesh.instanceColor.needsUpdate = true;
+    if (this.wallGhost.instanceColor) this.wallGhost.instanceColor.needsUpdate = true;
   }
 
   private updateBulbs(dt: number): void {
@@ -857,26 +879,46 @@ export class LevelView {
     if (dirty && this.bulbMesh.instanceColor) this.bulbMesh.instanceColor.needsUpdate = true;
   }
 
+  /**
+   * Walls between the camera and the caretaker fade to semi-transparent instead of moving.
+   * Hysteresis keeps a wall faded until the caretaker is clearly past it, so walking along a
+   * corridor does not make walls flicker. Collision and line of sight are unaffected.
+   */
   private updateWalls(dt: number, px: number, pz: number): void {
     const cdx = Math.sin(CAMERA.yaw);
     const cdz = Math.cos(CAMERA.yaw);
     const rx = Math.cos(CAMERA.yaw);
     const rz = -Math.sin(CAMERA.yaw);
-    const k = Math.min(1, dt * ANIMATION.wallCutSpeed);
-    let dirty = false;
+    const k = 1 - Math.exp(-dt * ANIMATION.wallFadeSpeed);
+    const minOpacity = GEOMETRY.wallFadeOpacity;
+    let matrices = false;
+    let opacity = false;
     for (let i = 0; i < this.walls.length; i++) {
       const w = this.walls[i];
       const ox = w.x + 0.5 - px;
       const oz = w.z + 0.5 - pz;
       const fwd = ox * cdx + oz * cdz;
-      const lat = ox * rx + oz * rz;
-      const cut = fwd > -0.4 && fwd < GEOMETRY.cutForward && Math.abs(lat) < GEOMETRY.cutLateral + fwd * 0.25;
-      w.target = cut ? GEOMETRY.wallCutHeight : GEOMETRY.wallHeight;
-      if (Math.abs(w.height - w.target) > 0.002) {
-        w.height += (w.target - w.height) * k;
-        if (Math.abs(w.height - w.target) <= 0.002) w.height = w.target;
-        this.setWallMatrix(this.wallMesh, i, w);
-        const show = w.height > 0.95;
+      const lat = Math.abs(ox * rx + oz * rz);
+      const m = w.faded ? GEOMETRY.fadeMargin : 0;
+      w.faded = fwd > -0.5 - m && fwd < GEOMETRY.fadeForward + m && lat < GEOMETRY.fadeLateral + fwd * 0.2 + m;
+      const target = w.faded ? 1 : 0;
+      if (w.fade === target) continue;
+      const wasGhost = w.fade > 0;
+      w.fade += (target - w.fade) * k;
+      if (Math.abs(w.fade - target) < 0.01) w.fade = target;
+      const isGhost = w.fade > 0;
+      if (isGhost !== wasGhost) {
+        // Move the wall between the opaque and the transparent mesh (seamless at opacity ≈ 1).
+        this.setWallMatrix(this.wallMesh, i, w, isGhost);
+        this.setWallMatrix(this.wallGhost, i, w, !isGhost);
+        matrices = true;
+      }
+      this.wallOpacity.setX(i, 1 - (1 - minOpacity) * w.fade);
+      opacity = true;
+      // Wall-mounted objects (doors, lamps, frames) hide once, mid-fade, rather than flickering.
+      const show = w.attachmentsShown ? w.fade < 0.6 : w.fade < 0.3;
+      if (show !== w.attachmentsShown) {
+        w.attachmentsShown = show;
         for (const a of w.attachments) {
           a.visible = show;
           const bulbIndex = a.userData.bulbIndex;
@@ -885,10 +927,13 @@ export class LevelView {
             this.bulbMesh.instanceMatrix.needsUpdate = true;
           }
         }
-        dirty = true;
       }
     }
-    if (dirty) this.wallMesh.instanceMatrix.needsUpdate = true;
+    if (matrices) {
+      this.wallMesh.instanceMatrix.needsUpdate = true;
+      this.wallGhost.instanceMatrix.needsUpdate = true;
+    }
+    if (opacity) this.wallOpacity.needsUpdate = true;
   }
 
   private updateLevers(dt: number): void {
@@ -968,6 +1013,7 @@ export class LevelView {
     this.maskTex.dispose();
     this.glowTex.dispose();
     this.wallMesh.dispose();
+    this.wallGhost.dispose();
     this.bulbMesh.dispose();
   }
 }

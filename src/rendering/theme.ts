@@ -120,10 +120,13 @@ export const CAMERA = {
 
 export const GEOMETRY = {
   wallHeight: 2.05,
-  wallCutHeight: 0.18,
-  /** Walls this far in front of the player (towards the camera) fade down. */
-  cutForward: 5.8,
-  cutLateral: 3.4,
+  /** Walls between the camera and the caretaker fade to this opacity (they never change height). */
+  wallFadeOpacity: 0.22,
+  /** Fade zone: how far in front of the caretaker (towards the camera) and to either side. */
+  fadeForward: 3.4,
+  fadeLateral: 2.2,
+  /** A faded wall stays faded until the caretaker is this much further away (prevents flicker). */
+  fadeMargin: 0.9,
   fixtureHeight: 1.40,
   doorHeight: 1.75,
 };
@@ -133,7 +136,8 @@ export const ANIMATION = {
   walkSwing: 0.7,
   stepRate: 9,
   bulbIgnite: 0.35,
-  wallCutSpeed: 8,
+  /** How quickly walls fade in/out (per second, exponential ease). */
+  wallFadeSpeed: 5,
   creatureSway: 0.05,
 };
 

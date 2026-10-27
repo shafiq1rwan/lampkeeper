@@ -14,6 +14,8 @@ let shared: SharedMaterials | null = null;
 export interface SharedMaterials {
   vertex: THREE.MeshLambertMaterial;
   wall: THREE.MeshLambertMaterial;
+  /** Transparent wall material with a per-instance `instanceOpacity` attribute (faded walls). */
+  wallGhost: THREE.MeshLambertMaterial;
   bulb: THREE.MeshBasicMaterial;
   glow: THREE.MeshBasicMaterial;
 }
@@ -24,11 +26,26 @@ export function materials(): SharedMaterials {
     shared = {
       vertex: new THREE.MeshLambertMaterial({ vertexColors: true }),
       wall: new THREE.MeshLambertMaterial({ vertexColors: true }),
+      wallGhost: ghostWallMaterial(),
       bulb: new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
       glow: new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false }),
     };
   }
   return shared;
+}
+
+function ghostWallMaterial(): THREE.MeshLambertMaterial {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, depthWrite: false });
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float instanceOpacity;\nvarying float vInstanceOpacity;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvInstanceOpacity = instanceOpacity;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vInstanceOpacity;')
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vInstanceOpacity;');
+  };
+  m.customProgramCacheKey = () => 'lampkeeper-wall-ghost';
+  return m;
 }
 
 // ------------------------------------------------------------------ props (furniture)
